@@ -1,14 +1,14 @@
 globalThis.__dirname = "/";
 globalThis.__filename = "/";
 
-// 引入 Cloudflare 的原生 TCP
+// 引入 CF 原生 TCP
 import { connect } from 'cloudflare:sockets';
-// 【终极黑魔法 1】：显式引入 Node.js 的 Buffer 对象
+// 引入 Node.js 核心事件器和 Buffer
 import { Buffer } from 'node:buffer';
+import { EventEmitter } from 'node:events';
 
 export async function onRequest(context) {
   const { Client } = await import('ssh2');
-  const { Duplex } = await import('node:stream');
   const { request } = context;
 
   if (request.headers.get('Upgrade') !== 'websocket') {
@@ -39,64 +39,75 @@ export async function onRequest(context) {
             return server.close();
         }
         
-        server.send('\x1b[32m[System]\x1b[0m TCP 隧道打通，注入虚拟网卡环境...\r\n');
+        server.send('\x1b[32m[System]\x1b[0m TCP 隧道打通，注入纯净直通套接字...\r\n');
 
-        const writer = tcpSocket.writable.getWriter();
-        const reader = tcpSocket.readable.getReader();
-
-        // 打造无缝流转接器
-        class CFBridgeStream extends Duplex {
-          constructor() {
-            super();
-            // 【终极黑魔法 2】：强行告诉引擎管道已打开
-            this.readable = true;
-            this.writable = true;
-            this.readyState = 'open'; 
-            this._readLoop();
-          }
-          async _readLoop() {
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) { this.push(null); break; }
-                if (value) {
-                    // 探针：打印进来的流量，证明服务器有回包
-                    server.send(`\x1b[90m[TCP-IN] 收到 ${value.byteLength} 字节回包\x1b[0m\r\n`);
-                    // 【终极黑魔法 3】：最严谨的 Uint8Array 转 Node.js Buffer 写法
-                    this.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
-                }
-              }
-            } catch (e) {
-              this.destroy(e);
+        // 【终极黑魔法】：彻底抛弃 Node.js 臃肿的 Duplex 流
+        // 手写一个透明的 FakeSocket，绝不吞噬任何一个字节
+        class FakeSocket extends EventEmitter {
+            constructor() {
+                super();
+                this.readyState = 'open'; // 告诉引擎管道已大开
+                this.writer = tcpSocket.writable.getWriter();
+                this.reader = tcpSocket.readable.getReader();
+                this._readLoop();
             }
-          }
-          _read(size) {}
-          _write(chunk, encoding, callback) {
-            // 探针：打印发出的流量，证明 ssh2 引擎在工作
-            server.send(`\x1b[90m[TCP-OUT] 引擎发送 ${chunk.length} 字节\x1b[0m\r\n`);
-            writer.write(chunk).then(() => callback()).catch(e => {
-                this.destroy(e);
-                callback(e);
-            });
-          }
-          _destroy(err, callback) {
-            writer.close().catch(()=>{});
-            reader.cancel().catch(()=>{});
-            callback(err);
-          }
-          
-          // 模拟完整的 Node.js Socket 方法，防止引擎报错
-          setTimeout() { return this; }
-          setNoDelay() { return this; }
-          setKeepAlive() { return this; }
-          ref() { return this; }
-          unref() { return this; }
+            async _readLoop() {
+                try {
+                    while (true) {
+                        const { done, value } = await this.reader.read();
+                        if (done) { 
+                            this.emit('end');
+                            this.emit('close');
+                            break; 
+                        }
+                        if (value) {
+                            server.send(`\x1b[90m[TCP-IN] 收到 ${value.byteLength} 字节\x1b[0m\r\n`);
+                            this.emit('data', Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+                        }
+                    }
+                } catch (e) {
+                    this.emit('error', e);
+                }
+            }
+            // 只要引擎调用 write，直接不加掩饰地发给 VPS！
+            write(chunk, encoding, callback) {
+                if (typeof encoding === 'function') callback = encoding;
+                server.send(`\x1b[90m[TCP-OUT] 发送 ${chunk.length} 字节\x1b[0m\r\n`);
+                
+                this.writer.write(chunk).then(() => {
+                    if (callback) callback();
+                }).catch(e => {
+                    this.emit('error', e);
+                });
+                return true; // 欺骗引擎：我的缓冲区永远是空的，随便发！
+            }
+            end(data, encoding, callback) {
+                if (data) this.write(data, encoding);
+                this.writer.close().catch(()=>{});
+                if (callback) callback();
+                this.emit('end');
+                this.emit('close');
+            }
+            destroy(err) {
+                this.writer.close().catch(()=>{});
+                this.reader.cancel().catch(()=>{});
+                if (err) this.emit('error', err);
+                this.emit('close');
+            }
+            // 补齐套接字基础方法，防止报错
+            setTimeout() { return this; }
+            setNoDelay() { return this; }
+            setKeepAlive() { return this; }
+            ref() { return this; }
+            unref() { return this; }
+            pause() { return this; }
+            resume() { return this; }
         }
 
-        const bridge = new CFBridgeStream();
+        const bridge = new FakeSocket();
         creds.sock = bridge;
 
-        // 【终极黑魔法 4】：强行开枪！触发 connect 事件，防止 ssh2 死等
+        // 强行发令：告诉引擎一切就绪，立刻开始握手！
         setTimeout(() => bridge.emit('connect'), 50);
 
         sshClient.on('ready', () => {
