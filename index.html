@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>WebSSH Terminal</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <style>
+        body { background-color: #000; margin: 0; padding: 20px; color: #fff; font-family: monospace; }
+        #terminal { width: 100%; height: 80vh; margin-top: 20px; }
+        input { padding: 5px; background: #333; color: #fff; border: 1px solid #555; }
+        button { padding: 5px 15px; background: #007acc; color: #fff; border: none; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h2>🚀 Serverless WebSSH</h2>
+    <div>
+        <input type="text" id="hostInput" placeholder="VPS IP 地址" value="1.2.3.4" />
+        <input type="text" id="portInput" placeholder="端口" value="22" style="width: 50px;" />
+        <button onclick="connectSSH()">连接 TCP 管道</button>
+    </div>
+    <div id="terminal"></div>
+
+    <script>
+        // 初始化终端
+        const term = new Terminal({ cursorBlink: true, theme: { background: '#1e1e1e' } });
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(document.getElementById('terminal'));
+        fitAddon.fit();
+        term.writeln('Welcome to Cloudflare Pages WebSSH!');
+        term.writeln('Ready to connect...');
+
+        let ws = null;
+
+        function connectSSH() {
+            const host = document.getElementById('hostInput').value;
+            const port = document.getElementById('portInput').value;
+            
+            term.writeln(`\r\n\x1b[33m[System]\x1b[0m 正在建立通往 ${host}:${port} 的底层 TCP 管道...`);
+
+            // 连接到我们刚刚写的 Cloudflare Function
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ssh?host=${host}&port=${port}`;
+            
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                term.writeln('\r\n\x1b[32m[System]\x1b[0m TCP 管道已打通！');
+                term.writeln('\x1b[31m[System]\x1b[0m 警告：目前接收到的是加密的 SSH 原始字节流。');
+            };
+
+            // 接收来自 VPS 的数据
+            ws.onmessage = async (event) => {
+                let data;
+                if (event.data instanceof Blob) {
+                    data = await event.data.text();
+                } else {
+                    data = event.data;
+                }
+                // 直接打印原始流（这里全是乱码，因为还没解密）
+                term.write(data);
+            };
+
+            ws.onclose = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m 连接已断开。');
+            ws.onerror = (err) => term.writeln(`\r\n\x1b[31m[System]\x1b[0m WebSocket 错误`);
+        }
+    </script>
+</body>
+</html>
