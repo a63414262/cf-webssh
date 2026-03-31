@@ -3,9 +3,9 @@ globalThis.__filename = "/";
 
 // 引入 CF 原生 TCP
 import { connect } from 'cloudflare:sockets';
-// 引入 Node.js 核心事件器和 Buffer
+// 显式引入 Node.js 核心模块
 import { Buffer } from 'node:buffer';
-import { EventEmitter } from 'node:events';
+import { Duplex } from 'node:stream';
 
 export async function onRequest(context) {
   const { Client } = await import('ssh2');
@@ -39,76 +39,67 @@ export async function onRequest(context) {
             return server.close();
         }
         
-        server.send('\x1b[32m[System]\x1b[0m TCP 隧道打通，注入纯净直通套接字...\r\n');
+        server.send('\x1b[32m[System]\x1b[0m TCP 隧道打通，注入纯正 Node.js 双向管道...\r\n');
 
-        // 【终极黑魔法】：彻底抛弃 Node.js 臃肿的 Duplex 流
-        // 手写一个透明的 FakeSocket，绝不吞噬任何一个字节
-        class FakeSocket extends EventEmitter {
-            constructor() {
-                super();
-                this.readyState = 'open'; // 告诉引擎管道已大开
-                this.writer = tcpSocket.writable.getWriter();
-                this.reader = tcpSocket.readable.getReader();
-                this._readLoop();
-            }
-            async _readLoop() {
-                try {
-                    while (true) {
-                        const { done, value } = await this.reader.read();
-                        if (done) { 
-                            this.emit('end');
-                            this.emit('close');
-                            break; 
-                        }
-                        if (value) {
-                            server.send(`\x1b[90m[TCP-IN] 收到 ${value.byteLength} 字节\x1b[0m\r\n`);
-                            this.emit('data', Buffer.from(value.buffer, value.byteOffset, value.byteLength));
-                        }
-                    }
-                } catch (e) {
-                    this.emit('error', e);
+        // 【终极黑魔法】：100% 符合规范的 Node.js 完美双向流
+        class CFNodeSocket extends Duplex {
+          constructor() {
+            super();
+            this.writer = tcpSocket.writable.getWriter();
+            this.reader = tcpSocket.readable.getReader();
+            this.readyState = 'open'; // 告诉引擎我们已经连上了
+            this._readLoop();
+          }
+
+          async _readLoop() {
+            try {
+              while (true) {
+                const { done, value } = await this.reader.read();
+                if (done) { 
+                    this.push(null);
+                    break; 
                 }
+                if (value) {
+                    server.send(`\x1b[90m[TCP-IN] 收到 ${value.byteLength} 字节\x1b[0m\r\n`);
+                    // 严格转换为 Node.js Buffer
+                    this.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+                }
+              }
+            } catch (e) {
+              this.destroy(e);
             }
-            // 只要引擎调用 write，直接不加掩饰地发给 VPS！
-            write(chunk, encoding, callback) {
-                if (typeof encoding === 'function') callback = encoding;
-                server.send(`\x1b[90m[TCP-OUT] 发送 ${chunk.length} 字节\x1b[0m\r\n`);
-                
-                this.writer.write(chunk).then(() => {
-                    if (callback) callback();
-                }).catch(e => {
-                    this.emit('error', e);
-                });
-                return true; // 欺骗引擎：我的缓冲区永远是空的，随便发！
-            }
-            end(data, encoding, callback) {
-                if (data) this.write(data, encoding);
-                this.writer.close().catch(()=>{});
-                if (callback) callback();
-                this.emit('end');
-                this.emit('close');
-            }
-            destroy(err) {
-                this.writer.close().catch(()=>{});
-                this.reader.cancel().catch(()=>{});
-                if (err) this.emit('error', err);
-                this.emit('close');
-            }
-            // 补齐套接字基础方法，防止报错
-            setTimeout() { return this; }
-            setNoDelay() { return this; }
-            setKeepAlive() { return this; }
-            ref() { return this; }
-            unref() { return this; }
-            pause() { return this; }
-            resume() { return this; }
+          }
+
+          _read(size) {
+            // 必须存在，以符合 Duplex 规范
+          }
+
+          _write(chunk, encoding, callback) {
+            server.send(`\x1b[90m[TCP-OUT] 发送 ${chunk.length} 字节\x1b[0m\r\n`);
+            // Cloudflare writer 严格要求 Uint8Array
+            this.writer.write(new Uint8Array(chunk)).then(() => {
+                callback();
+            }).catch(e => {
+                callback(e);
+            });
+          }
+
+          _destroy(err, callback) {
+            this.writer.close().catch(()=>{});
+            this.reader.cancel().catch(()=>{});
+            callback(err);
+          }
+
+          // 补齐 net.Socket 的专属方法
+          setTimeout() { return this; }
+          setNoDelay() { return this; }
+          setKeepAlive() { return this; }
+          ref() { return this; }
+          unref() { return this; }
         }
 
-        const bridge = new FakeSocket();
+        const bridge = new CFNodeSocket();
         creds.sock = bridge;
-
-        // 强行发令：告诉引擎一切就绪，立刻开始握手！
-        setTimeout(() => bridge.emit('connect'), 50);
 
         sshClient.on('ready', () => {
           server.send('\r\n\x1b[32m[System]\x1b[0m 密钥交换完成！正在请求 Shell...\r\n');
@@ -127,6 +118,9 @@ export async function onRequest(context) {
           server.send(`\r\n\x1b[31m[System] SSH 引擎报错:\x1b[0m ${err.message}\r\n`);
           server.close();
         }).connect(creds);
+
+        // 强行触发动机：告诉 ssh2 管道已就绪，立刻开始握手！
+        setTimeout(() => bridge.emit('connect'), 50);
 
       } catch (e) {
         server.send(`\r\n\x1b[31m[System] 致命错误: ${e.message}\x1b[0m\r\n`);
