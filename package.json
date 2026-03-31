@@ -1,0 +1,10 @@
+{
+  "name": "cf-webssh",
+  "version": "1.0.0",
+  "dependencies": {
+    "ssh2": "^1.15.0"
+  },
+  "browser": {
+    "cpu-features": false
+  }
+}
