@@ -39,73 +39,64 @@ export async function onRequest(context) {
             return server.close();
         }
         
-        server.send('\x1b[32m[System]\x1b[0m TCP 隧道打通，注入纯正 Node.js 双向管道...\r\n');
+        server.send('\x1b[32m[System]\x1b[0m TCP 隧道打通，注入原生流实例化对象...\r\n');
 
-        // 【终极黑魔法】：100% 符合规范的 Node.js 完美双向流
-        class CFNodeSocket extends Duplex {
-          constructor() {
-            super();
-            this.writer = tcpSocket.writable.getWriter();
-            this.reader = tcpSocket.readable.getReader();
-            this.readyState = 'open'; // 告诉引擎我们已经连上了
-            this._readLoop();
-          }
+        const writer = tcpSocket.writable.getWriter();
+        const reader = tcpSocket.readable.getReader();
 
-          async _readLoop() {
-            try {
-              while (true) {
-                const { done, value } = await this.reader.read();
-                if (done) { 
-                    this.push(null);
-                    break; 
-                }
-                if (value) {
-                    server.send(`\x1b[90m[TCP-IN] 收到 ${value.byteLength} 字节\x1b[0m\r\n`);
-                    // 严格转换为 Node.js Buffer
-                    this.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
-                }
-              }
-            } catch (e) {
-              this.destroy(e);
-            }
-          }
-
-          _read(size) {
-            // 必须存在，以符合 Duplex 规范
-          }
-
-          _write(chunk, encoding, callback) {
+        // 【终极核心】：直接实例化 Node.js 原生的 Duplex，彻底避免 ES6 class 继承导致的内部状态机崩溃！
+        const bridge = new Duplex({
+          read(size) {}, // 符合规范的空读取
+          write(chunk, encoding, callback) {
             server.send(`\x1b[90m[TCP-OUT] 发送 ${chunk.length} 字节\x1b[0m\r\n`);
-            // Cloudflare writer 严格要求 Uint8Array
-            this.writer.write(new Uint8Array(chunk)).then(() => {
-                callback();
-            }).catch(e => {
-                callback(e);
-            });
-          }
-
-          _destroy(err, callback) {
-            this.writer.close().catch(()=>{});
-            this.reader.cancel().catch(()=>{});
+            // 确保发出的数据是纯净的字节流
+            writer.write(new Uint8Array(chunk)).then(() => callback()).catch(callback);
+          },
+          destroy(err, callback) {
+            writer.close().catch(()=>{});
+            reader.cancel().catch(()=>{});
             callback(err);
           }
+        });
 
-          // 补齐 net.Socket 的专属方法
-          setTimeout() { return this; }
-          setNoDelay() { return this; }
-          setKeepAlive() { return this; }
-          ref() { return this; }
-          unref() { return this; }
-        }
+        // 欺骗引擎：模拟 net.Socket 的所有必备属性
+        bridge.readyState = 'open';
+        bridge.connecting = false;
+        bridge.remoteAddress = creds.host;
+        bridge.remotePort = creds.port;
+        bridge.setTimeout = function() { return this; };
+        bridge.setNoDelay = function() { return this; };
+        bridge.setKeepAlive = function() { return this; };
+        bridge.ref = function() { return this; };
+        bridge.unref = function() { return this; };
 
-        const bridge = new CFNodeSocket();
+        // 异步抽水泵：将 CF 的数据源源不断抽进 Node.js 管道
+        (async () => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) { 
+                  bridge.push(null);
+                  break; 
+              }
+              if (value) {
+                  server.send(`\x1b[90m[TCP-IN] 收到 ${value.byteLength} 字节\x1b[0m\r\n`);
+                  // 强制包装为 Node.js 原生 Buffer
+                  bridge.push(Buffer.from(value));
+              }
+            }
+          } catch (e) {
+            bridge.destroy(e);
+          }
+        })();
+
         creds.sock = bridge;
 
         sshClient.on('ready', () => {
           server.send('\r\n\x1b[32m[System]\x1b[0m 密钥交换完成！正在请求 Shell...\r\n');
           sshClient.shell({ term: 'xterm-256color' }, (err, stream) => {
             if (err) {
-              server.send('\r\n\x1b[31mShell 申请失败\x1b[0m\r\n');
+              server.send('\r\n\x1b[31mShell 申请失败: ' + err.message + '\x1b[0m\r\n');
               return server.close();
             }
             sshStream = stream;
@@ -119,7 +110,7 @@ export async function onRequest(context) {
           server.close();
         }).connect(creds);
 
-        // 强行触发动机：告诉 ssh2 管道已就绪，立刻开始握手！
+        // 强行触发动机：发出 connect 事件，防止死等
         setTimeout(() => bridge.emit('connect'), 50);
 
       } catch (e) {
