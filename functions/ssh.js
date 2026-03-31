@@ -1,8 +1,11 @@
 globalThis.__dirname = "/";
 globalThis.__filename = "/";
 
-// 【终极杀招】：直接引入原生 Node.js 物理网络模块！彻底抛弃模拟器！
-import { connect } from 'node:net';
+// 回归 CF 官方真神 API
+import { connect } from 'cloudflare:sockets';
+// 引入必需的 Node 模块
+import { Buffer } from 'node:buffer';
+import { Duplex } from 'node:stream';
 
 export async function onRequest(context) {
   const { Client } = await import('ssh2');
@@ -26,24 +29,82 @@ export async function onRequest(context) {
       try {
         const creds = JSON.parse(event.data);
 
-        server.send('\x1b[33m[System]\x1b[0m 正在向目标服务器发起原生 TCP 握手...\r\n');
+        server.send('\x1b[33m[System]\x1b[0m 正在通过 CF 官方 Sockets 发起连接...\r\n');
+        
+        const tcpSocket = connect({ hostname: creds.host, port: parseInt(creds.port) });
+        try {
+            await tcpSocket.opened; 
+        } catch (tcpErr) {
+            server.send(`\r\n\x1b[31m[System] TCP 连接被拒 (检查IP和防火墙): ${tcpErr.message}\x1b[0m\r\n`);
+            return server.close();
+        }
+        
+        server.send('\x1b[32m[System]\x1b[0m TCP 已连通，注入完美容错双向管道...\r\n');
 
-        // 核心：直接召唤 Node.js 真神！让 Cloudflare 在底层直接打通网卡
-        const socket = connect({ host: creds.host, port: parseInt(creds.port) });
+        const writer = tcpSocket.writable.getWriter();
+        const reader = tcpSocket.readable.getReader();
 
-        socket.on('connect', () => {
-            server.send('\x1b[32m[System]\x1b[0m 物理网络打通，正在进行引擎级握手...\r\n');
+        // 终极完美管道：自带类型强转和完整流状态机
+        const bridge = new Duplex({
+          read(size) {}, // 被动读取，保持空即可
+          write(chunk, encoding, callback) {
+            let buf;
+            // 【核心修复】：无论引擎塞进来什么乱七八糟的类型，一律强转！
+            if (Buffer.isBuffer(chunk)) {
+              buf = chunk;
+            } else if (typeof chunk === 'string') {
+              buf = Buffer.from(chunk, encoding || 'utf8');
+            } else {
+              buf = Buffer.from(chunk);
+            }
+            
+            server.send(`\x1b[90m[TCP-OUT] 引擎成功发送 ${buf.length} 字节\x1b[0m\r\n`);
+            writer.write(new Uint8Array(buf)).then(() => callback()).catch(callback);
+          },
+          destroy(err, callback) {
+            writer.close().catch(()=>{});
+            reader.cancel().catch(()=>{});
+            callback(err);
+          }
         });
 
-        socket.on('error', (err) => {
-            server.send(`\r\n\x1b[31m[System] 底层网络拦截:\x1b[0m ${err.message}\r\n`);
-        });
+        // 强行点亮所有的准备信号灯，让 ssh2 引擎放心写入
+        bridge.readyState = 'open';
+        bridge.readable = true;
+        bridge.writable = true;
+        bridge.connecting = false;
+        
+        // 补齐所有的冗余套接字方法
+        bridge.setTimeout = function() { return this; };
+        bridge.setNoDelay = function() { return this; };
+        bridge.setKeepAlive = function() { return this; };
+        bridge.ref = function() { return this; };
+        bridge.unref = function() { return this; };
 
-        // 原生 Socket 直接喂给引擎，严丝合缝，再无缓冲卡死问题！
-        creds.sock = socket;
+        // 异步抽水泵：将 CF 网卡的数据抽送给引擎
+        (async () => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) { 
+                  bridge.push(null);
+                  break; 
+              }
+              if (value) {
+                  server.send(`\x1b[90m[TCP-IN] 网卡收到 ${value.byteLength} 字节\x1b[0m\r\n`);
+                  // 严格包装成 Node.js 的原生 Buffer
+                  bridge.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+              }
+            }
+          } catch (e) {
+            bridge.destroy(e);
+          }
+        })();
+
+        creds.sock = bridge;
 
         sshClient.on('ready', () => {
-          server.send('\r\n\x1b[32m[System]\x1b[0m 密钥交换完成！正在请求 Shell...\r\n');
+          server.send('\r\n\x1b[32m[System]\x1b[0m 密钥交换成功！正在请求 Shell...\r\n');
           sshClient.shell({ term: 'xterm-256color' }, (err, stream) => {
             if (err) {
               server.send('\r\n\x1b[31mShell 申请失败: ' + err.message + '\x1b[0m\r\n');
