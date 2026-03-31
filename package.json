@@ -5,6 +5,7 @@
     "ssh2": "^1.15.0"
   },
   "browser": {
-    "cpu-features": false
+    "cpu-features": false,
+    "./node_modules/ssh2/lib/protocol/crypto/build/Release/sshcrypto.node": false
   }
 }
