@@ -1,13 +1,10 @@
-// 【核心黑客科技 1】：在 V8 引擎最顶层，强行伪造 Node.js 的硬盘目录变量
 globalThis.__dirname = "/";
 globalThis.__filename = "/";
 
 export async function onRequest(context) {
-  // 【核心黑客科技 2】：动态懒加载 (Dynamic Import)
-  // 这保证了在解析 ssh2 的代码之前，我们的伪造变量已经生效！
   const { Client } = await import('ssh2');
-
   const { request } = context;
+
   if (request.headers.get('Upgrade') !== 'websocket') {
     return new Response('Expected WebSocket', { status: 426 });
   }
@@ -18,9 +15,13 @@ export async function onRequest(context) {
 
   let sshClient = new Client();
   let sshStream = null;
+  
+  // 核心修复：增加一个锁，防止你在连接期间不小心敲击键盘导致 JSON 解析崩溃
+  let hasReceivedCreds = false; 
 
   server.addEventListener('message', (event) => {
-    if (!sshStream) {
+    if (!hasReceivedCreds) {
+      hasReceivedCreds = true; // 锁定：只解析第一次发来的 JSON 凭证
       try {
         const creds = JSON.parse(event.data);
         
@@ -37,15 +38,19 @@ export async function onRequest(context) {
             stream.on('close', () => server.close());
           });
         }).on('error', (err) => {
+          // 这里捕捉的是 SSH 握手失败、密码错误等网络层面的报错
           server.send(`\r\n\x1b[31m[System] SSH 引擎报错:\x1b[0m ${err.message}\r\n`);
           server.close();
         }).connect(creds);
 
       } catch (e) {
-        server.send('\r\n\x1b[31m[System] 凭证解析失败\x1b[0m\r\n');
+        // 这里捕捉的是 V8 引擎解析私钥时发生的底层崩溃，我们把它完整打印出来！
+        server.send(`\r\n\x1b[31m[System] 底层致命错误: ${e.message}\x1b[0m\r\n`);
+        server.send(`\x1b[31m[Stack] ${e.stack}\x1b[0m\r\n`);
         server.close();
       }
-    } else {
+    } else if (sshStream) {
+      // 只有 SSH 流建立后，才允许发送键盘字符
       sshStream.write(event.data);
     }
   });
