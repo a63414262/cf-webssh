@@ -1,7 +1,10 @@
 globalThis.__dirname = "/";
 globalThis.__filename = "/";
 
+// 引入 Cloudflare 的原生 TCP
 import { connect } from 'cloudflare:sockets';
+// 【终极黑魔法 1】：显式引入 Node.js 的 Buffer 对象
+import { Buffer } from 'node:buffer';
 
 export async function onRequest(context) {
   const { Client } = await import('ssh2');
@@ -32,7 +35,7 @@ export async function onRequest(context) {
         try {
             await tcpSocket.opened; 
         } catch (tcpErr) {
-            server.send(`\r\n\x1b[31m[System] 底层 TCP 连接失败 (请检查IP/端口/防火墙): ${tcpErr.message}\x1b[0m\r\n`);
+            server.send(`\r\n\x1b[31m[System] 底层 TCP 连接失败: ${tcpErr.message}\x1b[0m\r\n`);
             return server.close();
         }
         
@@ -45,26 +48,29 @@ export async function onRequest(context) {
         class CFBridgeStream extends Duplex {
           constructor() {
             super();
+            // 伪装成已经打开的网卡套接字
+            this.readyState = 'open';
             this._readLoop();
           }
           async _readLoop() {
             try {
               while (true) {
                 const { done, value } = await reader.read();
-                if (done) { this.push(null); break; }
-                this.push(value);
+                if (done) { 
+                    this.push(null); 
+                    break; 
+                }
+                // 【终极黑魔法 2】：将 Web 原生字节组强转为 Node.js Buffer！
+                // 这一行解决了 ssh2 无法解析数据导致的静默崩溃和超时问题！
+                this.push(Buffer.from(value));
               }
             } catch (e) {
               this.destroy(e);
             }
           }
           
-          // 👇👇👇 核心补漏：必须实现原生的 _read 方法，哪怕是空的！ 👇👇👇
-          _read(size) {
-              // 留空即可，因为我们通过 _readLoop 异步 push 数据
-          }
-          // 👆👆👆
-
+          _read(size) { /* 占位符，符合 Duplex 流的死板规范 */ }
+          
           _write(chunk, encoding, callback) {
             writer.write(chunk).then(() => callback()).catch(e => {
                 this.destroy(e);
@@ -76,6 +82,13 @@ export async function onRequest(context) {
             reader.cancel().catch(()=>{});
             callback(err);
           }
+
+          // 伪装一些底层的原生网络方法，防止 ssh2 调用时报错
+          setTimeout() { return this; }
+          setNoDelay() { return this; }
+          setKeepAlive() { return this; }
+          ref() { return this; }
+          unref() { return this; }
         }
 
         creds.sock = new CFBridgeStream();
@@ -87,14 +100,14 @@ export async function onRequest(context) {
               return server.close();
             }
             sshStream = stream;
-            server.send('\r\n\x1b[32m[System]\x1b[0m 成功打穿沙盒！您已获取最高权限。\r\n');
+            server.send('\r\n\x1b[32m[System]\x1b[0m 🚀 成功打穿 CF 沙盒！您已获取最高控制权限。\r\n');
             
             stream.on('data', (data) => server.send(data.toString('utf8')));
             stream.on('close', () => server.close());
           });
         }).on('error', (err) => {
           server.send(`\r\n\x1b[31m[System] SSH 引擎被踢出:\x1b[0m ${err.message}\r\n`);
-          server.send('\x1b[33m[排错提示] 如果提示 Handshake failed，说明你的 VPS 强行拒绝了前端的降级算法。\x1b[0m\r\n');
+          server.send('\x1b[33m[排错提示] 如果提示算法不匹配，请确保使用的是密码或普通 RSA 私钥。\x1b[0m\r\n');
           server.close();
         }).connect(creds);
 
