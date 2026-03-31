@@ -1,11 +1,8 @@
 globalThis.__dirname = "/";
 globalThis.__filename = "/";
 
-// 引入 CF 原生 TCP
-import { connect } from 'cloudflare:sockets';
-// 显式引入 Node.js 核心模块
-import { Buffer } from 'node:buffer';
-import { Duplex } from 'node:stream';
+// 【终极杀招】：直接引入原生 Node.js 物理网络模块！彻底抛弃模拟器！
+import { connect } from 'node:net';
 
 export async function onRequest(context) {
   const { Client } = await import('ssh2');
@@ -29,68 +26,21 @@ export async function onRequest(context) {
       try {
         const creds = JSON.parse(event.data);
 
-        server.send('\x1b[33m[System]\x1b[0m 正在向目标服务器发起真实 TCP 握手...\r\n');
-        const tcpSocket = connect({ hostname: creds.host, port: parseInt(creds.port) });
-        
-        try {
-            await tcpSocket.opened; 
-        } catch (tcpErr) {
-            server.send(`\r\n\x1b[31m[System] 底层 TCP 连接失败: ${tcpErr.message}\x1b[0m\r\n`);
-            return server.close();
-        }
-        
-        server.send('\x1b[32m[System]\x1b[0m TCP 隧道打通，注入原生流实例化对象...\r\n');
+        server.send('\x1b[33m[System]\x1b[0m 正在向目标服务器发起原生 TCP 握手...\r\n');
 
-        const writer = tcpSocket.writable.getWriter();
-        const reader = tcpSocket.readable.getReader();
+        // 核心：直接召唤 Node.js 真神！让 Cloudflare 在底层直接打通网卡
+        const socket = connect({ host: creds.host, port: parseInt(creds.port) });
 
-        // 【终极核心】：直接实例化 Node.js 原生的 Duplex，彻底避免 ES6 class 继承导致的内部状态机崩溃！
-        const bridge = new Duplex({
-          read(size) {}, // 符合规范的空读取
-          write(chunk, encoding, callback) {
-            server.send(`\x1b[90m[TCP-OUT] 发送 ${chunk.length} 字节\x1b[0m\r\n`);
-            // 确保发出的数据是纯净的字节流
-            writer.write(new Uint8Array(chunk)).then(() => callback()).catch(callback);
-          },
-          destroy(err, callback) {
-            writer.close().catch(()=>{});
-            reader.cancel().catch(()=>{});
-            callback(err);
-          }
+        socket.on('connect', () => {
+            server.send('\x1b[32m[System]\x1b[0m 物理网络打通，正在进行引擎级握手...\r\n');
         });
 
-        // 欺骗引擎：模拟 net.Socket 的所有必备属性
-        bridge.readyState = 'open';
-        bridge.connecting = false;
-        bridge.remoteAddress = creds.host;
-        bridge.remotePort = creds.port;
-        bridge.setTimeout = function() { return this; };
-        bridge.setNoDelay = function() { return this; };
-        bridge.setKeepAlive = function() { return this; };
-        bridge.ref = function() { return this; };
-        bridge.unref = function() { return this; };
+        socket.on('error', (err) => {
+            server.send(`\r\n\x1b[31m[System] 底层网络拦截:\x1b[0m ${err.message}\r\n`);
+        });
 
-        // 异步抽水泵：将 CF 的数据源源不断抽进 Node.js 管道
-        (async () => {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) { 
-                  bridge.push(null);
-                  break; 
-              }
-              if (value) {
-                  server.send(`\x1b[90m[TCP-IN] 收到 ${value.byteLength} 字节\x1b[0m\r\n`);
-                  // 强制包装为 Node.js 原生 Buffer
-                  bridge.push(Buffer.from(value));
-              }
-            }
-          } catch (e) {
-            bridge.destroy(e);
-          }
-        })();
-
-        creds.sock = bridge;
+        // 原生 Socket 直接喂给引擎，严丝合缝，再无缓冲卡死问题！
+        creds.sock = socket;
 
         sshClient.on('ready', () => {
           server.send('\r\n\x1b[32m[System]\x1b[0m 密钥交换完成！正在请求 Shell...\r\n');
@@ -109,9 +59,6 @@ export async function onRequest(context) {
           server.send(`\r\n\x1b[31m[System] SSH 引擎报错:\x1b[0m ${err.message}\r\n`);
           server.close();
         }).connect(creds);
-
-        // 强行触发动机：发出 connect 事件，防止死等
-        setTimeout(() => bridge.emit('connect'), 50);
 
       } catch (e) {
         server.send(`\r\n\x1b[31m[System] 致命错误: ${e.message}\x1b[0m\r\n`);
