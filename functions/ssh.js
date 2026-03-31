@@ -1,11 +1,11 @@
 globalThis.__dirname = "/";
 globalThis.__filename = "/";
 
-// 回归 CF 官方真神 API
+// 引入 CF 原生 TCP
 import { connect } from 'cloudflare:sockets';
-// 引入必需的 Node 模块
+// 引入 Node.js 核心事件器和 Buffer
 import { Buffer } from 'node:buffer';
-import { Duplex } from 'node:stream';
+import { EventEmitter } from 'node:events';
 
 export async function onRequest(context) {
   const { Client } = await import('ssh2');
@@ -29,79 +29,91 @@ export async function onRequest(context) {
       try {
         const creds = JSON.parse(event.data);
 
-        server.send('\x1b[33m[System]\x1b[0m 正在通过 CF 官方 Sockets 发起连接...\r\n');
-        
+        server.send('\x1b[33m[System]\x1b[0m 发起底层 TCP 直连...\r\n');
+
         const tcpSocket = connect({ hostname: creds.host, port: parseInt(creds.port) });
         try {
             await tcpSocket.opened; 
         } catch (tcpErr) {
-            server.send(`\r\n\x1b[31m[System] TCP 连接被拒 (检查IP和防火墙): ${tcpErr.message}\x1b[0m\r\n`);
+            server.send(`\r\n\x1b[31m[System] TCP 连接失败: ${tcpErr.message}\x1b[0m\r\n`);
             return server.close();
         }
-        
-        server.send('\x1b[32m[System]\x1b[0m TCP 已连通，注入完美容错双向管道...\r\n');
 
-        const writer = tcpSocket.writable.getWriter();
-        const reader = tcpSocket.readable.getReader();
+        server.send('\x1b[32m[System]\x1b[0m TCP 已通，注入事件驱动型无阻碍网卡...\r\n');
 
-        // 终极完美管道：自带类型强转和完整流状态机
-        const bridge = new Duplex({
-          read(size) {}, // 被动读取，保持空即可
-          write(chunk, encoding, callback) {
-            let buf;
-            // 【核心修复】：无论引擎塞进来什么乱七八糟的类型，一律强转！
-            if (Buffer.isBuffer(chunk)) {
-              buf = chunk;
-            } else if (typeof chunk === 'string') {
-              buf = Buffer.from(chunk, encoding || 'utf8');
-            } else {
-              buf = Buffer.from(chunk);
+        // 【终极修复】：彻底抛弃 CF 损坏的 Duplex 流，纯手工接管收发事件！
+        class EventSocket extends EventEmitter {
+            constructor() {
+                super();
+                this.readable = true;
+                this.writable = true;
+                this.readyState = 'open'; // 告诉引擎通道大开
+                this.writer = tcpSocket.writable.getWriter();
+                this.reader = tcpSocket.readable.getReader();
+                this.pump();
             }
-            
-            server.send(`\x1b[90m[TCP-OUT] 引擎成功发送 ${buf.length} 字节\x1b[0m\r\n`);
-            writer.write(new Uint8Array(buf)).then(() => callback()).catch(callback);
-          },
-          destroy(err, callback) {
-            writer.close().catch(()=>{});
-            reader.cancel().catch(()=>{});
-            callback(err);
-          }
-        });
 
-        // 强行点亮所有的准备信号灯，让 ssh2 引擎放心写入
-        bridge.readyState = 'open';
-        bridge.readable = true;
-        bridge.writable = true;
-        bridge.connecting = false;
-        
-        // 补齐所有的冗余套接字方法
-        bridge.setTimeout = function() { return this; };
-        bridge.setNoDelay = function() { return this; };
-        bridge.setKeepAlive = function() { return this; };
-        bridge.ref = function() { return this; };
-        bridge.unref = function() { return this; };
-
-        // 异步抽水泵：将 CF 网卡的数据抽送给引擎
-        (async () => {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) { 
-                  bridge.push(null);
-                  break; 
-              }
-              if (value) {
-                  server.send(`\x1b[90m[TCP-IN] 网卡收到 ${value.byteLength} 字节\x1b[0m\r\n`);
-                  // 严格包装成 Node.js 的原生 Buffer
-                  bridge.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
-              }
+            // 暴力抽水机：收到数据一秒不留，立刻砸给引擎
+            async pump() {
+                try {
+                    while (true) {
+                        const { done, value } = await this.reader.read();
+                        if (done) {
+                            this.emit('end');
+                            this.emit('close');
+                            break;
+                        }
+                        if (value) {
+                            server.send(`\x1b[90m[TCP-IN] 收到 ${value.byteLength} 字节\x1b[0m\r\n`);
+                            // 直接发射事件，彻底绕过所有可能卡死的缓冲区
+                            this.emit('data', Buffer.from(value));
+                        }
+                    }
+                } catch (e) {
+                    this.emit('error', e);
+                }
             }
-          } catch (e) {
-            bridge.destroy(e);
-          }
-        })();
 
-        creds.sock = bridge;
+            // 暴力发射器：引擎给的数据，不经过任何缓存，直接砸向 VPS
+            write(chunk, encoding, cb) {
+                if (typeof encoding === 'function') cb = encoding;
+                server.send(`\x1b[90m[TCP-OUT] 发送 ${chunk.length} 字节\x1b[0m\r\n`);
+                
+                this.writer.write(new Uint8Array(chunk)).then(() => {
+                    if (cb) cb();
+                }).catch(e => {
+                    this.emit('error', e);
+                });
+                return true; 
+            }
+
+            end(chunk, encoding, cb) {
+                if (chunk) this.write(chunk, encoding);
+                this.writer.close().catch(()=>{});
+                if (cb) cb();
+                this.emit('end');
+            }
+
+            destroy(err) {
+                this.writer.close().catch(()=>{});
+                this.reader.cancel().catch(()=>{});
+                if (err) this.emit('error', err);
+                this.emit('close');
+            }
+
+            // 完美伪装原生管道特性
+            pipe(dest) {
+                this.on('data', chunk => dest.write(chunk));
+                return dest;
+            }
+
+            unpipe() {} pause() {} resume() {} cork() {} uncork() {} setEncoding() {}
+            setTimeout() { return this; } setNoDelay() { return this; }
+            setKeepAlive() { return this; } ref() { return this; } unref() { return this; }
+        }
+
+        const sock = new EventSocket();
+        creds.sock = sock;
 
         sshClient.on('ready', () => {
           server.send('\r\n\x1b[32m[System]\x1b[0m 密钥交换成功！正在请求 Shell...\r\n');
@@ -120,6 +132,9 @@ export async function onRequest(context) {
           server.send(`\r\n\x1b[31m[System] SSH 引擎报错:\x1b[0m ${err.message}\r\n`);
           server.close();
         }).connect(creds);
+
+        // 强制触发动机，拒绝等待
+        setTimeout(() => sock.emit('connect'), 50);
 
       } catch (e) {
         server.send(`\r\n\x1b[31m[System] 致命错误: ${e.message}\x1b[0m\r\n`);
