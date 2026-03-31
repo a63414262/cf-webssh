@@ -2,45 +2,56 @@
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <title>WebSSH Pro (Browser Decryption)</title>
+    <title>WebSSH Pro (终极极客版)</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
     <style>
         body { background-color: #0c0c0c; margin: 0; padding: 20px; color: #fff; font-family: monospace; }
-        .toolbar { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; align-items: flex-start; }
-        .input-group { display: flex; flex-direction: column; gap: 5px; }
-        input, textarea { padding: 8px; background: #222; color: #0f0; border: 1px solid #444; border-radius: 4px; outline: none; font-family: monospace; }
-        textarea { width: 300px; height: 60px; resize: vertical; }
-        button { padding: 8px 20px; background: #007acc; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; height: 35px; }
+        .toolbar { display: flex; gap: 15px; margin-bottom: 15px; flex-wrap: wrap; align-items: flex-start; }
+        .input-group { display: flex; flex-direction: column; gap: 8px; }
+        input[type="text"], input[type="password"], textarea { 
+            padding: 8px; background: #222; color: #0f0; border: 1px solid #444; border-radius: 4px; outline: none; font-family: monospace; 
+        }
+        textarea { width: 350px; height: 70px; resize: vertical; }
+        button { padding: 8px 20px; background: #007acc; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; height: 35px; align-self: flex-end; }
         button:hover { background: #005f9e; }
         #terminal { width: 100%; height: 70vh; border: 1px solid #333; padding: 5px; border-radius: 4px; }
+        .hint { color: #888; font-size: 13px; margin-bottom: 2px; }
     </style>
 </head>
 <body>
-    <h2>🚀 Serverless WebSSH (私钥/密码 双模直连)</h2>
+    <h2>🚀 Serverless WebSSH (纯前端解密 + 内存级私钥)</h2>
     <div class="toolbar">
         <div class="input-group">
             <div style="display: flex; gap: 10px;">
                 <input type="text" id="hostInput" placeholder="VPS IP" value="" />
-                <input type="text" id="portInput" placeholder="Port" value="22" style="width: 60px;" />
+                <input type="text" id="portInput" placeholder="端口" value="22" style="width: 60px;" />
             </div>
             <div style="display: flex; gap: 10px;">
-                <input type="text" id="userInput" placeholder="root" value="root" style="width: 80px;" />
+                <input type="text" id="userInput" placeholder="用户名" value="root" style="width: 80px;" />
                 <input type="password" id="passInput" placeholder="密码 (或私钥保护密码)" />
             </div>
         </div>
+        
         <div class="input-group">
-            <textarea id="keyInput" placeholder="在此粘贴私钥 (-----BEGIN OPENSSH PRIVATE KEY-----)&#10;留空则使用密码登录"></textarea>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <label class="hint">📁 直接读取本地私钥文件 (不出网):</label>
+                <input type="file" id="keyFileInput" style="color: #bbb; font-size: 12px; max-width: 180px;" />
+            </div>
+            <textarea id="keyInput" placeholder="在此粘贴私钥 (-----BEGIN OPENSSH PRIVATE KEY-----)&#10;留空则使用左侧密码登录"></textarea>
         </div>
+
         <button id="connectBtn">极客直连</button>
     </div>
+    
     <div id="terminal"></div>
 
     <script type="module">
         import { Client } from 'https://esm.sh/ssh2@1.15.0?bundle';
         import { Duplex } from 'https://esm.sh/readable-stream@4.5.2?bundle';
 
+        // 初始化终端界面
         const term = new Terminal({ cursorBlink: true, theme: { background: '#0c0c0c' } });
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
@@ -48,9 +59,23 @@
         fitAddon.fit();
         window.addEventListener('resize', () => fitAddon.fit());
 
-        term.writeln('\x1b[36m支持 [密码登录] 与 [私钥登录]\x1b[0m');
-        term.writeln('提示: 你的私钥仅在浏览器内存中运算，绝对不会发送到代理服务器。');
+        term.writeln('\x1b[36m>>> WebSSH 引擎已就绪 <<<\x1b[0m');
+        term.writeln('安全提示: 所有加解密均在您的浏览器本地内存中完成，私钥文件绝对不会通过网络上传。');
 
+        // 本地私钥文件读取逻辑 (FileReader API)
+        document.getElementById('keyFileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                document.getElementById('keyInput').value = event.target.result;
+                term.writeln(`\r\n\x1b[32m[System]\x1b[0m 已成功读取本地私钥文件: ${file.name}`);
+            };
+            reader.readAsText(file);
+        });
+
+        // 连接主逻辑
         document.getElementById('connectBtn').onclick = () => {
             const host = document.getElementById('hostInput').value;
             const port = document.getElementById('portInput').value;
@@ -58,16 +83,22 @@
             const password = document.getElementById('passInput').value;
             const privateKey = document.getElementById('keyInput').value.trim();
             
-            term.reset();
-            term.writeln(`\x1b[33m[System]\x1b[0m 正在打通底层 TCP 桥梁...`);
+            if (!host) {
+                alert("请输入目标服务器 IP！"); return;
+            }
 
+            term.reset();
+            term.writeln(`\x1b[33m[System]\x1b[0m 正在打通通往 ${host}:${port} 的底层 TCP 桥梁...`);
+
+            // 连接到 Cloudflare 边缘节点代理
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${protocol}//${window.location.host}/ssh?host=${host}&port=${port}`);
-            ws.binaryType = 'arraybuffer';
+            ws.binaryType = 'arraybuffer'; // 必须使用二进制流接收数据
 
             ws.onopen = () => {
-                term.writeln('\x1b[33m[System]\x1b[0m 桥梁打通，正在进行本地加密握手...');
+                term.writeln('\x1b[33m[System]\x1b[0m 桥梁打通，正在浏览器内存中注入 Node.js 加密引擎...');
 
+                // 核心黑客科技：将浏览器的 WebSocket 强行伪装成 Node.js 的底层网络流
                 class WSStream extends Duplex {
                     constructor(ws) {
                         super();
@@ -85,44 +116,49 @@
                 const stream = new WSStream(ws);
                 const conn = new Client();
 
+                // 认证成功与终端数据流处理
                 conn.on('ready', () => {
                     term.writeln('\r\n\x1b[32m[System]\x1b[0m 认证成功！已进入安全终端。\r\n');
                     conn.shell({ term: 'xterm-256color' }, (err, shellStream) => {
-                        if (err) return term.writeln('Shell 分配失败: ' + err.message);
+                        if (err) return term.writeln('\x1b[31mShell 分配失败:\x1b[0m ' + err.message);
+                        
+                        // 建立 PTY 双向绑定
                         shellStream.on('data', (data) => term.write(data.toString('utf8')));
                         term.onData((data) => shellStream.write(data));
                     });
                 }).on('error', (err) => {
-                    term.writeln(`\r\n\x1b[31m[System]\x1b[0m 认证失败: ${err.message}`);
+                    term.writeln(`\r\n\x1b[31m[System]\x1b[0m 认证或连接失败: ${err.message}`);
                 });
 
-                // --- 核心认证逻辑配置 ---
+                // 配置 SSH 认证参数
                 const connectConfig = {
                     sock: stream,
                     username: username,
                     readyTimeout: 20000,
-                    algorithms: { cipher: ['aes128-ctr', 'aes192-ctr', 'aes256-ctr'] }
+                    algorithms: {
+                        cipher: ['aes128-ctr', 'aes192-ctr', 'aes256-ctr']
+                    }
                 };
 
+                // 判断使用哪种方式登录
                 if (privateKey) {
-                    // 开启私钥模式
                     connectConfig.privateKey = privateKey;
-                    term.writeln('\x1b[33m[System]\x1b[0m 采用身份验证模式: [私钥 (Public Key)]');
-                    // 如果私钥设置了密码保护，顺便把密码传进去
+                    term.writeln('\x1b[33m[System]\x1b[0m 采用身份验证模式: [私钥模式 (Public Key)]');
                     if (password) {
                         connectConfig.passphrase = password;
-                        term.writeln('\x1b[33m[System]\x1b[0m 检测到私钥保护密码 (Passphrase)。');
+                        term.writeln('\x1b[33m[System]\x1b[0m 正在应用私钥保护密码 (Passphrase)...');
                     }
                 } else {
-                    // 传统密码模式
                     connectConfig.password = password;
-                    term.writeln('\x1b[33m[System]\x1b[0m 采用身份验证模式: [密码 (Password)]');
+                    term.writeln('\x1b[33m[System]\x1b[0m 采用身份验证模式: [传统密码 (Password)]');
                 }
 
+                // 启动 SSH 引擎！
                 conn.connect(connectConfig);
             };
 
-            ws.onclose = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m TCP 管道已断开。');
+            ws.onclose = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m 底层 TCP 管道已安全断开。');
+            ws.onerror = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m WebSocket 通信异常，请检查网络或代理代码。');
         };
     </script>
 </body>
