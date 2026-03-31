@@ -6,6 +6,9 @@
   },
   "browser": {
     "cpu-features": false,
-    "./node_modules/ssh2/lib/protocol/crypto/build/Release/sshcrypto.node": false
+    "./node_modules/ssh2/lib/protocol/crypto/build/Release/sshcrypto.node": false,
+    "./node_modules/ssh2/lib/protocol/crypto/poly1305.js": false,
+    "./node_modules/ssh2/lib/protocol/crypto/ed25519.js": false,
+    "./node_modules/ssh2/lib/protocol/crypto/bcrypt_pbkdf.js": false
   }
 }
