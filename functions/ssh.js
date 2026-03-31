@@ -20,7 +20,6 @@ export async function onRequest(context) {
   let sshStream = null;
   let hasReceivedCreds = false; 
 
-  // 注意这里加上了 async
   server.addEventListener('message', async (event) => {
     if (!hasReceivedCreds) {
       hasReceivedCreds = true;
@@ -31,11 +30,8 @@ export async function onRequest(context) {
         const tcpSocket = connect({ hostname: creds.host, port: parseInt(creds.port) });
         
         try {
-            // 【核心修复：TCP 安全锁】
-            // 强制等待 Cloudflare 和你的 VPS 完成底层的 TCP 三次握手
             await tcpSocket.opened; 
         } catch (tcpErr) {
-            // 如果 IP 填错、端口没开、或者 Cloudflare 被你的服务器防火墙拦截，错误会在这里暴露
             server.send(`\r\n\x1b[31m[System] 底层 TCP 连接失败 (请检查IP/端口/防火墙): ${tcpErr.message}\x1b[0m\r\n`);
             return server.close();
         }
@@ -62,6 +58,13 @@ export async function onRequest(context) {
               this.destroy(e);
             }
           }
+          
+          // 👇👇👇 核心补漏：必须实现原生的 _read 方法，哪怕是空的！ 👇👇👇
+          _read(size) {
+              // 留空即可，因为我们通过 _readLoop 异步 push 数据
+          }
+          // 👆👆👆
+
           _write(chunk, encoding, callback) {
             writer.write(chunk).then(() => callback()).catch(e => {
                 this.destroy(e);
