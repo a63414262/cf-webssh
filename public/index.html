@@ -2,43 +2,53 @@
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <title>WebSSH Pro (Pure CF Edge)</title>
+    <title>WebSSH Pro (CF Edge 终极版)</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
     <style>
-        body { background-color: #0c0c0c; margin: 0; padding: 20px; color: #fff; font-family: monospace; }
-        .toolbar { display: flex; gap: 15px; margin-bottom: 15px; flex-wrap: wrap; }
+        body { background-color: #0c0c0c; margin: 0; padding: 20px; color: #fff; font-family: 'Consolas', monospace; }
+        .toolbar { display: flex; gap: 15px; margin-bottom: 15px; flex-wrap: wrap; align-items: flex-start; }
         .input-group { display: flex; flex-direction: column; gap: 8px; }
-        input, textarea { padding: 8px; background: #222; color: #0f0; border: 1px solid #444; border-radius: 4px; outline: none; font-family: monospace; }
-        textarea { width: 350px; height: 70px; }
-        button { padding: 8px 20px; background: #007acc; color: #fff; border: none; border-radius: 4px; cursor: pointer; height: 35px; align-self: flex-end;}
+        input[type="text"], input[type="password"], textarea { 
+            padding: 8px; background: #222; color: #0f0; border: 1px solid #444; border-radius: 4px; outline: none; font-family: monospace; 
+        }
+        textarea { width: 350px; height: 70px; resize: vertical; }
+        button { padding: 8px 20px; background: #007acc; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; height: 35px; align-self: flex-end; }
+        button:hover { background: #005f9e; }
         #terminal { width: 100%; height: 70vh; border: 1px solid #333; padding: 5px; border-radius: 4px; }
+        .hint { color: #888; font-size: 13px; margin-bottom: 2px; }
     </style>
 </head>
 <body>
-    <h2>🚀 Serverless WebSSH (100% Cloudflare Edge 驱动)</h2>
+    <h2>🚀 Serverless WebSSH (Cloudflare 强拆沙盒版)</h2>
     <div class="toolbar">
         <div class="input-group">
             <div style="display: flex; gap: 10px;">
-                <input type="text" id="hostInput" placeholder="VPS IP" />
+                <input type="text" id="hostInput" placeholder="VPS IP 地址" value="" />
                 <input type="text" id="portInput" placeholder="端口" value="22" style="width: 60px;" />
             </div>
             <div style="display: flex; gap: 10px;">
-                <input type="text" id="userInput" placeholder="root" value="root" style="width: 80px;" />
-                <input type="password" id="passInput" placeholder="密码 (或私钥保护密码)" />
+                <input type="text" id="userInput" placeholder="用户名" value="root" style="width: 80px;" />
+                <input type="password" id="passInput" placeholder="密码 (或私钥密码)" />
             </div>
         </div>
+        
         <div class="input-group">
-            <label style="color: #888; font-size: 12px;">📁 读取本地私钥文件:</label>
-            <input type="file" id="keyFileInput" style="color: #bbb; font-size: 12px;" />
-            <textarea id="keyInput" placeholder="在此粘贴私钥 (留空则使用密码登录)"></textarea>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <label class="hint">📁 直接读取本地私钥文件 (纯前端，绝对安全):</label>
+                <input type="file" id="keyFileInput" style="color: #bbb; font-size: 12px; max-width: 180px;" />
+            </div>
+            <textarea id="keyInput" placeholder="在此粘贴私钥 (-----BEGIN OPENSSH PRIVATE KEY-----)&#10;留空则默认使用左侧密码登录"></textarea>
         </div>
-        <button id="connectBtn">CF 边缘直连</button>
+
+        <button id="connectBtn">极客直连</button>
     </div>
+    
     <div id="terminal"></div>
 
     <script>
+        // 1. 初始化终端界面
         const term = new Terminal({ cursorBlink: true, theme: { background: '#0c0c0c' } });
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
@@ -46,54 +56,92 @@
         fitAddon.fit();
         window.addEventListener('resize', () => fitAddon.fit());
 
-        term.writeln('\x1b[36m>>> Cloudflare 代理已准备就绪 <<<\x1b[0m');
+        term.writeln('\x1b[36m>>> Cloudflare 边缘节点代理已就绪 <<<\x1b[0m');
+        term.writeln('正在等待目标服务器信息...');
 
+        // 2. 本地私钥文件读取逻辑 (FileReader API)
         document.getElementById('keyFileInput').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
+
             const reader = new FileReader();
-            reader.onload = e => {
-                document.getElementById('keyInput').value = e.target.result;
-                term.writeln(`\x1b[32m[System]\x1b[0m 本地私钥读取成功: ${file.name}`);
+            reader.onload = function(event) {
+                document.getElementById('keyInput').value = event.target.result;
+                term.writeln(`\r\n\x1b[32m[System]\x1b[0m 已成功读取本地私钥文件: ${file.name}`);
             };
             reader.readAsText(file);
         });
 
         let ws = null;
-        term.onData(data => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(data); });
 
+        // 3. 监听终端键盘输入，发送给 WebSocket
+        term.onData(data => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(data);
+            }
+        });
+
+        // 4. 连接主逻辑
         document.getElementById('connectBtn').onclick = () => {
-            const host = document.getElementById('hostInput').value;
-            const port = document.getElementById('portInput').value;
-            const username = document.getElementById('userInput').value;
+            const host = document.getElementById('hostInput').value.trim();
+            const port = document.getElementById('portInput').value.trim() || '22';
+            const username = document.getElementById('userInput').value.trim() || 'root';
             const password = document.getElementById('passInput').value;
             const privateKey = document.getElementById('keyInput').value.trim();
             
-            if (!host) { alert("请输入 IP！"); return; }
+            if (!host) {
+                alert("极客，请先输入目标服务器的 IP 地址！"); return;
+            }
+
             term.reset();
             term.writeln(`\x1b[33m[System]\x1b[0m 正在连接 Cloudflare 边缘节点...`);
 
+            // 连接到同域名的 CF Function 代理
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}/ssh`);
 
             ws.onopen = () => {
-                term.writeln('\x1b[33m[System]\x1b[0m 已接入 CF 边缘，正在下发加密凭证...');
-                const creds = { host, port: parseInt(port), username, readyTimeout: 20000 };
+                term.writeln('\x1b[33m[System]\x1b[0m 已接入 CF 边缘，正在下发加密凭证并强制降级算法...');
+
+                // 【核心黑客科技】：强制算法降级字典
+                // 彻底封杀导致 V8 崩溃的 chacha20-poly1305 和 ed25519 (WASM依赖)
+                const creds = { 
+                    host, 
+                    port: parseInt(port), 
+                    username, 
+                    readyTimeout: 20000,
+                    algorithms: {
+                        cipher: ['aes128-ctr', 'aes192-ctr', 'aes256-ctr', 'aes128-gcm@openssh.com', 'aes256-gcm@openssh.com'],
+                        serverHostKey: ['ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521'],
+                        kex: ['ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521', 'diffie-hellman-group14-sha256']
+                    }
+                };
+
+                // 判断登录模式
                 if (privateKey) {
                     creds.privateKey = privateKey;
-                    if (password) creds.passphrase = password;
+                    term.writeln('\x1b[36m[Auth]\x1b[0m 采用身份验证模式: [私钥 (RSA/ECDSA)]');
+                    if (password) {
+                        creds.passphrase = password;
+                        term.writeln('\x1b[36m[Auth]\x1b[0m 已附加私钥保护密码。');
+                    }
                 } else {
                     creds.password = password;
+                    term.writeln('\x1b[36m[Auth]\x1b[0m 采用身份验证模式: [密码 (Password)]');
                 }
+
+                // 将配置好的凭证打包发送给后端的 ssh2 引擎
                 ws.send(JSON.stringify(creds));
             };
 
+            // 接收后端传回的 PTY 终端数据
             ws.onmessage = async (event) => {
                 let data = event.data instanceof Blob ? await event.data.text() : event.data;
                 term.write(data);
             };
 
-            ws.onclose = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m CF 管道已断开。');
+            ws.onclose = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m CF 底层管道已安全断开。');
+            ws.onerror = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m WebSocket 通信异常，请检查网络环境。');
         };
     </script>
 </body>
