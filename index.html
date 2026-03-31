@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <title>WebSSH Terminal Pro</title>
+    <title>WebSSH (Pure Browser Decryption)</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
@@ -10,81 +10,98 @@
         body { background-color: #0c0c0c; margin: 0; padding: 20px; color: #fff; font-family: monospace; }
         .toolbar { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
         input { padding: 8px; background: #222; color: #0f0; border: 1px solid #444; border-radius: 4px; outline: none; }
-        input::placeholder { color: #666; }
         button { padding: 8px 20px; background: #007acc; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
         button:hover { background: #005f9e; }
         #terminal { width: 100%; height: 75vh; border: 1px solid #333; padding: 5px; border-radius: 4px; }
     </style>
 </head>
 <body>
-    <h2>🚀 Serverless WebSSH (Route A)</h2>
+    <h2>🚀 Serverless WebSSH (WASM/JS Client Bypass)</h2>
     <div class="toolbar">
         <input type="text" id="hostInput" placeholder="VPS IP" value="" />
         <input type="text" id="portInput" placeholder="Port" value="22" style="width: 60px;" />
         <input type="text" id="userInput" placeholder="root" value="root" style="width: 80px;" />
         <input type="password" id="passInput" placeholder="密码" value="" />
-        <button onclick="connectSSH()">连接服务器</button>
+        <button id="connectBtn">极客直连</button>
     </div>
     <div id="terminal"></div>
 
-    <script>
-        const term = new Terminal({ 
-            cursorBlink: true, 
-            theme: { background: '#0c0c0c', foreground: '#cccccc' },
-            fontFamily: 'Consolas, "Courier New", monospace'
-        });
+    <script type="module">
+        // 动态从 CDN 实时编译并拉取 Node.js 的核心流模块和 SSH 引擎
+        import { Client } from 'https://esm.sh/ssh2@1.15.0?bundle';
+        import { Duplex } from 'https://esm.sh/readable-stream@4.5.2?bundle';
+
+        const term = new Terminal({ cursorBlink: true, theme: { background: '#0c0c0c' } });
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
         term.open(document.getElementById('terminal'));
         fitAddon.fit();
-        
-        term.writeln('\x1b[36m欢迎使用自建 WebSSH 工具\x1b[0m');
-        term.writeln('请在上方输入服务器凭证并点击连接...');
+        window.addEventListener('resize', () => fitAddon.fit());
 
-        let ws = null;
+        term.writeln('\x1b[36m欢迎来到纯粹的前端解密世界！\x1b[0m');
+        term.writeln('正在等待目标信息...');
 
-        // 监听用户的键盘输入，并通过 WebSocket 发送出去
-        term.onData(data => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(data);
-            }
-        });
-
-        function connectSSH() {
+        document.getElementById('connectBtn').onclick = () => {
             const host = document.getElementById('hostInput').value;
             const port = document.getElementById('portInput').value;
             const username = document.getElementById('userInput').value;
             const password = document.getElementById('passInput').value;
             
-            if(!host || !password) {
-                alert("请输入 IP 和 密码！"); return;
-            }
-
             term.reset();
-            term.writeln(`\x1b[33m[System]\x1b[0m 正在通过 Cloudflare Edge 节点连接 ${host}...`);
+            term.writeln(`\x1b[33m[System]\x1b[0m 正在打通通往 ${host} 的底层 TCP 桥梁...`);
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ssh`);
+            const ws = new WebSocket(`${protocol}//${window.location.host}/ssh?host=${host}&port=${port}`);
+            ws.binaryType = 'arraybuffer'; // 必须使用二进制流接收数据
 
             ws.onopen = () => {
-                term.writeln('\x1b[33m[System]\x1b[0m WebSocket 已连接，正在验证 SSH 凭证...');
-                // 首次连接时，把账号密码打包成 JSON 发给后端用于解密
-                const creds = { host, port, username, password };
-                ws.send(JSON.stringify(creds));
+                term.writeln('\x1b[33m[System]\x1b[0m 桥梁已打通，正在浏览器内存中注入加密引擎...');
+
+                // 黑客操作：把浏览器的 WebSocket 强行伪装成 Node.js 的底层网络流
+                class WSStream extends Duplex {
+                    constructor(ws) {
+                        super();
+                        this.ws = ws;
+                        this.ws.onmessage = (e) => this.push(new Uint8Array(e.data));
+                        this.ws.onclose = () => this.push(null);
+                    }
+                    _write(chunk, encoding, callback) {
+                        if (this.ws.readyState === WebSocket.OPEN) this.ws.send(chunk);
+                        callback();
+                    }
+                    _read() {}
+                }
+
+                const stream = new WSStream(ws);
+                const conn = new Client();
+
+                conn.on('ready', () => {
+                    term.writeln('\r\n\x1b[32m[System]\x1b[0m SSH 握手并解密成功！你已掌控最高权限。\r\n');
+                    
+                    conn.shell({ term: 'xterm-256color' }, (err, shellStream) => {
+                        if (err) return term.writeln('Shell 分配失败: ' + err.message);
+                        
+                        // 连接 PTY 输入输出
+                        shellStream.on('data', (data) => term.write(data.toString('utf8')));
+                        term.onData((data) => shellStream.write(data));
+                    });
+
+                }).on('error', (err) => {
+                    term.writeln(`\r\n\x1b[31m[System]\x1b[0m 引擎连接失败: ${err.message}`);
+                }).connect({
+                    sock: stream,         // 把伪装的流喂给 SSH 引擎
+                    username: username,
+                    password: password,
+                    readyTimeout: 20000,
+                    algorithms: {
+                        // 强制使用纯 JS 能兼容的算法，防止某些老旧 C++ 算法报错
+                        cipher: ['aes128-ctr', 'aes192-ctr', 'aes256-ctr']
+                    }
+                });
             };
 
-            ws.onmessage = async (event) => {
-                let data = event.data instanceof Blob ? await event.data.text() : event.data;
-                // 将后端传来的纯文本打印到终端
-                term.write(data);
-            };
-
-            ws.onclose = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m 连接已安全断开。');
-            ws.onerror = () => term.writeln(`\r\n\x1b[31m[System]\x1b[0m WebSocket 通信异常`);
-        }
-
-        // 监听窗口大小改变，自适应终端
-        window.addEventListener('resize', () => fitAddon.fit());
+            ws.onclose = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m TCP 管道已断开。');
+        };
     </script>
 </body>
 </html>
