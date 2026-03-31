@@ -1,65 +1,77 @@
-import { connect } from 'cloudflare:sockets';
+import { Client } from 'ssh2';
 
 export async function onRequest(context) {
   const { request } = context;
-  
-  // 1. 检查是否是 WebSocket 升级请求
-  const upgradeHeader = request.headers.get('Upgrade');
-  if (!upgradeHeader || upgradeHeader !== 'websocket') {
-    return new Response('Expected Upgrade: websocket', { status: 426 });
+
+  // 1. 确保是 WebSocket 请求
+  if (request.headers.get('Upgrade') !== 'websocket') {
+    return new Response('Expected WebSocket', { status: 426 });
   }
 
-  // 2. 从 URL 获取目标 VPS 的 IP 和端口
-  const url = new URL(request.url);
-  const host = url.searchParams.get('host');
-  const port = url.searchParams.get('port') || 22;
-
-  if (!host) {
-    return new Response('Missing target host', { status: 400 });
-  }
-
-  // 3. 创建 WebSocket 对
+  // 2. 创建 WebSocket 对
   const webSocketPair = new WebSocketPair();
   const [client, server] = Object.values(webSocketPair);
-
-  // 接受 WebSocket 连接
   server.accept();
 
-  try {
-    // 4. 使用 Cloudflare 的底层 Socket 直连 VPS
-    const tcpSocket = connect({ hostname: host, port: parseInt(port) });
-    
-    // 打开 TCP 的读写流
-    const tcpWriter = tcpSocket.writable.getWriter();
-    const tcpReader = tcpSocket.readable.getReader();
+  let sshClient = new Client();
+  let sshStream = null;
 
-    // 5. 将 WebSocket 收到的数据写入 TCP (浏览器 -> VPS)
-    server.addEventListener('message', async (event) => {
-      if (event.data) {
-        await tcpWriter.write(event.data);
-      }
-    });
-
-    // 6. 将 TCP 收到的数据发回 WebSocket (VPS -> 浏览器)
-    (async () => {
+  // 3. 监听前端发来的数据
+  server.addEventListener('message', (event) => {
+    // 如果 SSH 流还没建立，说明收到的第一条消息是包含账号密码的认证 JSON
+    if (!sshStream) {
       try {
-        while (true) {
-          const { done, value } = await tcpReader.read();
-          if (done) break;
-          server.send(value);
-        }
+        const creds = JSON.parse(event.data);
+        
+        // 配置 SSH 连接事件
+        sshClient.on('ready', () => {
+          // 申请一个自带颜色的伪终端 (PTY)
+          sshClient.shell({ term: 'xterm-256color' }, (err, stream) => {
+            if (err) {
+              server.send('\r\n\x1b[31m[System]\x1b[0m 申请 Shell 失败\r\n');
+              server.close();
+              return;
+            }
+            sshStream = stream;
+            server.send('\r\n\x1b[32m[System]\x1b[0m 认证成功！已进入安全终端。\r\n');
+            
+            // 将 VPS 的输出数据发给前端
+            stream.on('data', (data) => {
+              server.send(data.toString('utf8'));
+            });
+            
+            stream.on('close', () => {
+              server.send('\r\n\x1b[31m[System]\x1b[0m 会话结束\r\n');
+              server.close();
+            });
+          });
+        }).on('error', (err) => {
+          server.send(`\r\n\x1b[31m[System]\x1b[0m SSH 错误: ${err.message}\r\n`);
+          server.close();
+        }).connect({
+          host: creds.host,
+          port: parseInt(creds.port),
+          username: creds.username,
+          password: creds.password,
+          readyTimeout: 15000 // 15秒超时
+        });
+
       } catch (e) {
-        console.error("TCP read error", e);
+        server.send('\r\n\x1b[31m[System]\x1b[0m 凭证解析失败\r\n');
+        server.close();
       }
-    })();
+    } else {
+      // 如果 SSH 流已经建立，说明收到的是你敲击键盘的字符，直接发给 VPS
+      sshStream.write(event.data);
+    }
+  });
 
-    // 7. 返回 101 状态码，建立连接
-    return new Response(null, {
-      status: 101,
-      webSocket: client,
-    });
+  server.addEventListener('close', () => {
+    if (sshClient) sshClient.end();
+  });
 
-  } catch (err) {
-    return new Response('TCP Connection Failed: ' + err.message, { status: 500 });
-  }
+  return new Response(null, {
+    status: 101,
+    webSocket: client,
+  });
 }
