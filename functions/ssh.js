@@ -39,7 +39,7 @@ export async function onRequest(context) {
             return server.close();
         }
         
-        server.send('\x1b[32m[System]\x1b[0m TCP 隧道已完全打通，引擎开始交换密钥...\r\n');
+        server.send('\x1b[32m[System]\x1b[0m TCP 隧道打通，注入虚拟网卡环境...\r\n');
 
         const writer = tcpSocket.writable.getWriter();
         const reader = tcpSocket.readable.getReader();
@@ -48,30 +48,32 @@ export async function onRequest(context) {
         class CFBridgeStream extends Duplex {
           constructor() {
             super();
-            // 伪装成已经打开的网卡套接字
-            this.readyState = 'open';
+            // 【终极黑魔法 2】：强行告诉引擎管道已打开
+            this.readable = true;
+            this.writable = true;
+            this.readyState = 'open'; 
             this._readLoop();
           }
           async _readLoop() {
             try {
               while (true) {
                 const { done, value } = await reader.read();
-                if (done) { 
-                    this.push(null); 
-                    break; 
+                if (done) { this.push(null); break; }
+                if (value) {
+                    // 探针：打印进来的流量，证明服务器有回包
+                    server.send(`\x1b[90m[TCP-IN] 收到 ${value.byteLength} 字节回包\x1b[0m\r\n`);
+                    // 【终极黑魔法 3】：最严谨的 Uint8Array 转 Node.js Buffer 写法
+                    this.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
                 }
-                // 【终极黑魔法 2】：将 Web 原生字节组强转为 Node.js Buffer！
-                // 这一行解决了 ssh2 无法解析数据导致的静默崩溃和超时问题！
-                this.push(Buffer.from(value));
               }
             } catch (e) {
               this.destroy(e);
             }
           }
-          
-          _read(size) { /* 占位符，符合 Duplex 流的死板规范 */ }
-          
+          _read(size) {}
           _write(chunk, encoding, callback) {
+            // 探针：打印发出的流量，证明 ssh2 引擎在工作
+            server.send(`\x1b[90m[TCP-OUT] 引擎发送 ${chunk.length} 字节\x1b[0m\r\n`);
             writer.write(chunk).then(() => callback()).catch(e => {
                 this.destroy(e);
                 callback(e);
@@ -82,8 +84,8 @@ export async function onRequest(context) {
             reader.cancel().catch(()=>{});
             callback(err);
           }
-
-          // 伪装一些底层的原生网络方法，防止 ssh2 调用时报错
+          
+          // 模拟完整的 Node.js Socket 方法，防止引擎报错
           setTimeout() { return this; }
           setNoDelay() { return this; }
           setKeepAlive() { return this; }
@@ -91,23 +93,27 @@ export async function onRequest(context) {
           unref() { return this; }
         }
 
-        creds.sock = new CFBridgeStream();
+        const bridge = new CFBridgeStream();
+        creds.sock = bridge;
+
+        // 【终极黑魔法 4】：强行开枪！触发 connect 事件，防止 ssh2 死等
+        setTimeout(() => bridge.emit('connect'), 50);
 
         sshClient.on('ready', () => {
+          server.send('\r\n\x1b[32m[System]\x1b[0m 密钥交换完成！正在请求 Shell...\r\n');
           sshClient.shell({ term: 'xterm-256color' }, (err, stream) => {
             if (err) {
               server.send('\r\n\x1b[31mShell 申请失败\x1b[0m\r\n');
               return server.close();
             }
             sshStream = stream;
-            server.send('\r\n\x1b[32m[System]\x1b[0m 🚀 成功打穿 CF 沙盒！您已获取最高控制权限。\r\n');
+            server.send('\r\n\x1b[32m[System]\x1b[0m 🚀 成功打穿 CF 沙盒！您已获取最高控制权限。\r\n\r\n');
             
             stream.on('data', (data) => server.send(data.toString('utf8')));
             stream.on('close', () => server.close());
           });
         }).on('error', (err) => {
-          server.send(`\r\n\x1b[31m[System] SSH 引擎被踢出:\x1b[0m ${err.message}\r\n`);
-          server.send('\x1b[33m[排错提示] 如果提示算法不匹配，请确保使用的是密码或普通 RSA 私钥。\x1b[0m\r\n');
+          server.send(`\r\n\x1b[31m[System] SSH 引擎报错:\x1b[0m ${err.message}\r\n`);
           server.close();
         }).connect(creds);
 
