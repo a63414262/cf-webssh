@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <title>WebSSH Pro (Koyeb 核心直连版)</title>
+    <title>WebSSH Pro (Koyeb 物理直连版)</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
@@ -36,7 +36,7 @@
         
         <div class="input-group">
             <div style="display: flex; align-items: center; justify-content: space-between;">
-                <label class="hint">📁 本地私钥文件 (不再限制 Ed25519):</label>
+                <label class="hint">📁 本地私钥文件 (满血版，支持 Ed25519):</label>
                 <input type="file" id="keyFileInput" style="color: #bbb; font-size: 12px; max-width: 180px;" />
             </div>
             <textarea id="keyInput" placeholder="在此粘贴私钥 (-----BEGIN OPENSSH PRIVATE KEY-----)&#10;留空则默认使用左侧密码登录"></textarea>
@@ -48,7 +48,6 @@
     <div id="terminal"></div>
 
     <script>
-        // 1. 初始化终端界面
         const term = new Terminal({ cursorBlink: true, theme: { background: '#0c0c0c' } });
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
@@ -59,11 +58,9 @@
         term.writeln('\x1b[36m>>> WebSSH 前端已就绪 <<<\x1b[0m');
         term.writeln('正在等待目标服务器信息...');
 
-        // 2. 本地私钥文件读取逻辑 (FileReader API，纯前端不出网)
         document.getElementById('keyFileInput').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
-
             const reader = new FileReader();
             reader.onload = function(event) {
                 document.getElementById('keyInput').value = event.target.result;
@@ -74,14 +71,13 @@
 
         let ws = null;
 
-        // 3. 监听终端键盘输入，发送给 WebSocket
         term.onData(data => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(data);
-            }
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
         });
 
-        // 4. 连接主逻辑
+        // Koyeb 后端地址
+        const backendDomain = 'ssh-kj123.koyeb.app';
+
         document.getElementById('connectBtn').onclick = () => {
             const host = document.getElementById('hostInput').value.trim();
             const port = document.getElementById('portInput').value.trim() || '22';
@@ -89,54 +85,57 @@
             const password = document.getElementById('passInput').value;
             const privateKey = document.getElementById('keyInput').value.trim();
             
-            if (!host) {
-                alert("极客，请先输入目标服务器的 IP 地址！"); return;
-            }
+            if (!host) { alert("极客，请先输入目标服务器的 IP 地址！"); return; }
 
             term.reset();
-            term.writeln(`\x1b[33m[System]\x1b[0m 正在越过 Cloudflare，直连 Koyeb 物理核心节点...`);
+            term.writeln(`\x1b[33m[System]\x1b[0m 正在向 Koyeb 发送 HTTP 唤醒信号 (处理冷启动)...`);
 
-            // 【核心枢纽】：强制将 WebSocket 隧道打向 Koyeb 后端
-            ws = new WebSocket('wss://ssh-kj123.koyeb.app');
+            // 【核心修复】：先发送 HTTP GET 请求强制唤醒沉睡的容器
+            fetch(`https://${backendDomain}/`)
+                .then(response => {
+                    term.writeln(`\x1b[32m[System]\x1b[0m Koyeb 物理节点已唤醒响应！正在建立 WSS 加密隧道...`);
+                    initWebSocket(host, port, username, password, privateKey);
+                })
+                .catch(err => {
+                    // 如果 HTTP 不通，也强行试一下 WS，死马当活马医
+                    term.writeln(`\x1b[31m[System]\x1b[0m 唤醒响应超时，强行启动隧道注入...`);
+                    initWebSocket(host, port, username, password, privateKey);
+                });
+        };
+
+        function initWebSocket(host, port, username, password, privateKey) {
+            // 注意：很多第三方部署的 WebSocket 路径可能是 / 或者 /ssh，这里默认使用根路径 /
+            ws = new WebSocket(`wss://${backendDomain}/`);
 
             ws.onopen = () => {
-                term.writeln('\x1b[33m[System]\x1b[0m 已连通 Koyeb 节点，正在下发加密凭证...');
+                term.writeln('\x1b[32m[System]\x1b[0m 隧道已打通！正在下发加密凭证...');
 
-                // 组装标准 ssh2 认证参数
-                // Koyeb 是真 Node.js，支持满血加密算法，无需任何降级黑魔法！
-                const creds = { 
-                    host, 
-                    port: parseInt(port), 
-                    username, 
-                    readyTimeout: 20000
-                };
+                const creds = { host, port: parseInt(port), username, readyTimeout: 20000 };
 
-                // 智能判断登录模式
                 if (privateKey) {
                     creds.privateKey = privateKey;
-                    term.writeln('\x1b[36m[Auth]\x1b[0m 采用身份验证模式: [私钥 (支持 RSA/Ed25519/ECDSA)]');
-                    if (password) {
-                        creds.passphrase = password;
-                        term.writeln('\x1b[36m[Auth]\x1b[0m 已附加私钥保护密码。');
-                    }
+                    term.writeln('\x1b[36m[Auth]\x1b[0m 身份验证: [私钥模式]');
+                    if (password) creds.passphrase = password;
                 } else {
                     creds.password = password;
-                    term.writeln('\x1b[36m[Auth]\x1b[0m 采用身份验证模式: [密码 (Password)]');
+                    term.writeln('\x1b[36m[Auth]\x1b[0m 身份验证: [密码模式]');
                 }
 
-                // 将配置好的凭证打包发送给 Koyeb 后端
                 ws.send(JSON.stringify(creds));
             };
 
-            // 接收后端传回的 PTY 终端数据
             ws.onmessage = async (event) => {
                 let data = event.data instanceof Blob ? await event.data.text() : event.data;
                 term.write(data);
             };
 
             ws.onclose = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m 底层 WebSocket 管道已安全断开。');
-            ws.onerror = () => term.writeln('\r\n\x1b[31m[System]\x1b[0m WebSocket 通信异常，Koyeb 节点可能处于冷启动休眠状态，请等待十秒后重试。');
-        };
+            
+            ws.onerror = (err) => {
+                term.writeln(`\r\n\x1b[31m[System]\x1b[0m 致命错误：目标后端 (ssh-kj123.koyeb.app) 拒绝了连接。`);
+                term.writeln(`\x1b[33m[排错提示]\x1b[0m 请确认该 Koyeb 节点正在运行，或者检查后端 WebSocket 的路径是否正确（例如需要改为 wss://ssh-kj123.koyeb.app/ssh）。`);
+            };
+        }
     </script>
 </body>
 </html>
